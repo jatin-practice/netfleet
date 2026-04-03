@@ -1,0 +1,59 @@
+jobs:
+  - name: optic_power_collection
+    description: Collect optical power stats
+    operation: OPTIC_POWER
+    segments: [Tier1, Tier2, Tier3]
+    cron: "0 2 * * *"
+    protocol: SNMP
+    timeout_minutes: 120
+    error_threshold: 100
+    retry_count: 3
+
+  - name: interface_stats_collection
+    description: Collect interface statistics
+    operation: INTERFACE_STATS
+    segments: [Tier1, Tier2, Tier3, Edge, Field]
+    cron: "0 3 * * *"
+    protocol: SNMP
+    timeout_minutes: 180
+    error_threshold: 150
+    retry_count: 3
+
+  - name: device_discovery_sync
+    description: Daily device fleet discovery sync
+    operation: DISCOVERY
+    segments: [Tier1, Tier2, Tier3, Edge, Field]
+    cron: "0 1 * * *"
+    protocol: null
+    timeout_minutes: 60
+    error_threshold: 50
+    retry_count: 1
+
+  - name: config_push_tier1
+    description: Push configuration to Tier1 devices
+    operation: CONFIG_PUSH
+    segments: [Tier1]
+    cron: "0 4 * * *"
+    protocol: SSH
+    timeout_minutes: 90
+    error_threshold: 50
+    retry_count: 3
+
+  - name: config_push_edge
+    description: Push configuration to Edge devices
+    operation: CONFIG_PUSH
+    segments: [Edge, Field]
+    cron: "0 5 * * *"
+    protocol: TELNET
+    timeout_minutes: 120
+    error_threshold: 100
+    retry_count: 3
+
+settings:
+  max_concurrent_instances: 6
+  thread_pool_size: 150
+  queue_poll_interval_seconds: 5
+  job_check_interval_seconds: 30
+  delta_threshold_percentage: 10
+  cache_timeout_minutes: 30
+  max_retry_attempts: 3

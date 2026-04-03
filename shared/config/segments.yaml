@@ -1,0 +1,58 @@
+segments:
+  higher:
+    - name: Tier1
+      description: Core Network Switch
+      priority: HIGH
+      identity: serial_number
+      protocols: [SNMP, SSH]
+      source: primary_db
+      vendors: [cisco_ios, huawei_vrp, juniper_junos]
+
+    - name: Tier2
+      description: Distribution Switch
+      priority: HIGH
+      identity: serial_number
+      protocols: [SNMP, SSH]
+      source: primary_db
+      vendors: [cisco_ios, huawei_vrp]
+
+    - name: Tier3
+      description: Data Center Switch
+      priority: HIGH
+      identity: serial_number
+      protocols: [SNMP, SSH, Telnet]
+      source: primary_db
+      vendors: [cisco_ios, huawei_vrp, juniper_junos]
+
+  lower:
+    - name: Edge
+      description: Edge Switch
+      priority: STANDARD
+      identity: mac_address
+      protocols: [SSH, Telnet]
+      source: secondary_files
+      vendors: [bdcom, zte_zxros, utstarcom]
+
+    - name: Field
+      description: Field Switch
+      priority: STANDARD
+      identity: mac_address
+      protocols: [Telnet]
+      source: secondary_files
+      vendors: [bdcom, utstarcom]
+
+queues:
+  redis:
+    higher: queue_higher_segments
+    lower: queue_lower_segments
+    raw_results: queue_raw_results
+    normalized: queue_normalized_records
+    db_insert: queue_db_insert
+
+  kafka:
+    higher: netfleet.higher.segments
+    lower: netfleet.lower.segments
+    raw_results: netfleet.raw.results
+    normalized: netfleet.normalized.records
+    db_insert: netfleet.db.insert
+    discovery_events: netfleet.discovery.events
