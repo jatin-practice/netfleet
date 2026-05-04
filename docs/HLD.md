@@ -48,6 +48,12 @@ Open Source Gap    → Nothing handles millions of devices
 
 NetFleet fills this gap.
 
+A second gap exists in the intelligence layer. Even
+after collecting device data, operations teams query
+MongoDB directly using raw query syntax. Raw CLI
+output stored as text is unsearchable. These are
+the problems Phase 2 and Phase 3 address.
+
 ---
 
 ## System Overview
@@ -71,6 +77,20 @@ Enterprise   → Kubernetes cluster
                10M+ devices
 ```
 
+Two intelligence phases layer on top of the pipeline:
+```
+Phase 2      → Natural Language Query
+               Claude API translates plain English
+               to MongoDB filter and executes it
+               POST /api/v1/query
+
+Phase 3      → RAG on Device Output
+               Raw CLI output embedded and stored
+               in Qdrant vector store
+               Semantic search over device logs
+               POST /api/v1/search
+```
+
 ---
 
 ## Architecture
@@ -84,7 +104,7 @@ graph TB
         NC[Network Controller]
     end
 
-    subgraph Pipeline
+    subgraph CorePipeline
         D[Component 1\nDevice Discovery]
         S[Component 2\nJob Scheduler]
         I[Component 3\nInterim Orchestrator]
@@ -93,14 +113,25 @@ graph TB
         M[Component 5\nMongoDB Insert]
     end
 
+    subgraph IntelligencePipeline
+        RI[Component 6\nRAG Indexer\nPhase 3]
+    end
+
     subgraph TransportLayer
         RQ[Redis Queues\nStandalone]
         KQ[Kafka Topics\nDistributed]
     end
 
     subgraph Storage
-        DB[(MongoDB)]
+        DB[(MongoDB\nStructured State)]
         RC[(Redis Cache)]
+        QD[(Qdrant\nVector Store)]
+    end
+
+    subgraph IntelligenceLayer
+        NLQ[NL Query\nClaude API\nPhase 2]
+        RSS[RAG Search\nSentence Transformers\nPhase 3]
+        APIG[REST API\nFastAPI]
     end
 
     subgraph NetworkDevices
@@ -132,12 +163,18 @@ graph TB
     Z --> P
     U --> P
     P --> TransportLayer
+    P -->|queue_rag_raw| RI
     TransportLayer --> PP
     PP --> TransportLayer
     TransportLayer --> M
     M --> DB
     M --> RC
     RC --> S
+    RI --> QD
+    APIG --> NLQ
+    APIG --> RSS
+    NLQ -->|read only filter| DB
+    RSS -->|semantic query| QD
 ```
 
 ---
@@ -411,6 +448,130 @@ Cache timeout:
 
 ---
 
+### Component 6 — RAG Indexer (Phase 3)
+
+Consumes raw device CLI output from a dedicated
+fanout queue and builds a searchable vector corpus
+in Qdrant. Runs independently of the core pipeline.
+
+**Fanout from Preprocessor:**
+```
+Preprocessor publishes raw output to two queues:
+
+    queue_raw_results   → Postprocessor (existing)
+    queue_rag_raw       → RAG Indexer (new)
+
+Both queues carry the same RawDeviceOutput message.
+If RAG Indexer is down, queue_rag_raw accumulates.
+Core pipeline is completely unaffected.
+```
+
+**Chunking and embedding:**
+```
+Raw CLI output can be thousands of lines.
+One vector per device output would lose precision.
+
+Strategy:
+    Split raw_output into chunks of ~512 tokens
+    Each chunk becomes one Qdrant point
+    Chunk carries full device metadata as payload
+
+Embedding model:
+    sentence-transformers all-MiniLM-L6-v2
+    384 dimensional dense vector
+    Runs locally — no external API call
+```
+
+**Qdrant point payload:**
+```
+{
+    device_id:    string,
+    vendor:       string,
+    region:       string,
+    segment:      string,
+    operation:    string,
+    execution_id: string,
+    collected_at: ISO8601 timestamp,
+    raw_chunk:    string (512 token window)
+}
+```
+
+**Why Qdrant and not MongoDB Atlas Vector Search:**
+```
+MongoDB holds structured fleet state.
+Mixing vector index into the same DB couples
+the operational store with the search corpus.
+Qdrant is purpose built for vector workloads
+and keeps the two concerns separated.
+```
+
+---
+
+### Phase 2 — Natural Language Query Engine
+
+Allows ops engineers to query fleet state and
+device statistics using plain English instead of
+writing MongoDB filters manually.
+
+**Request flow:**
+```
+POST /api/v1/query
+    body: { "question": "show me all BX devices
+                         in bangalore with high
+                         CRC errors" }
+
+1. NL Query service receives question
+2. Builds schema context from MongoDB collections
+   (devices, device_stats, operation_results)
+3. Calls Claude claude-sonnet-4-20250514 with
+   system prompt containing schema context
+4. Claude returns a MongoDB filter JSON object
+5. Safety validator checks filter is read-only:
+   rejects $where, $eval, $function operators
+6. Motor executes filter against target collection
+7. Results formatted to plain English summary
+8. Response returned to caller
+```
+
+**Schema context injection (system prompt excerpt):**
+```
+You convert natural language questions about a
+network device fleet into MongoDB filter objects.
+
+Collection: devices
+Fields:
+  device_id (string), ip_address (string),
+  vendor (enum: cisco_ios huawei_vrp juniper_junos
+               bdcom zte_zxros utstarcom),
+  segment (enum: Tier1 Tier2 Tier3 Edge Field),
+  region (string), status (enum: ACTIVE INACTIVE
+  UNREACHABLE), protocol (enum: SSH SNMP TELNET REST)
+
+Collection: device_stats
+Fields:
+  device_id (string), operation (string),
+  region (string), segment (string),
+  stats (object with vendor-specific fields
+         e.g. crc_errors, cpu_percent, rx_power_dbm),
+  collected_at (datetime), execution_id (string)
+
+Return ONLY valid JSON. No explanation.
+Example: { "region": "bangalore",
+           "stats.crc_errors": { "$gt": 100 } }
+```
+
+**What Claude does not decide:**
+```
+Claude only produces the filter dict.
+Collection routing (devices vs device_stats)
+is decided by keyword matching in the question
+before the Claude call — not by Claude.
+This prevents prompt injection from redirecting
+queries to unintended collections.
+```
+
+---
+
 ## Plugin Architecture
 
 Anyone can add vendor support by implementing
@@ -447,7 +608,7 @@ PluginRegistry.register(CiscoIOSPlugin)
 
 ## Data Flow
 
-### Happy Path
+### Happy Path — Core Pipeline
 ```
 1.  Scheduler detects job cron matches current time
 2.  Scheduler calls Interim with job details
@@ -456,15 +617,50 @@ PluginRegistry.register(CiscoIOSPlugin)
 5.  Scheduler marks job RUNNING stores total_records
 6.  Preprocessor workers consume from transport
 7.  Plugin handler connects to device
-8.  Raw output published to transport
-9.  Postprocessor consumes raw output
-10. TextFSM template normalizes vendor output
-11. Normalized records published to transport
-12. MongoDB Insert consumes normalized records
-13. Bulk insert to MongoDB
-14. Cache updated with inserted count
-15. Scheduler detects inserted equals total
-16. Job marked COMPLETE
+8.  Raw output published to queue_raw_results
+9.  Raw output also published to queue_rag_raw
+10. Postprocessor consumes queue_raw_results
+11. TextFSM template normalizes vendor output
+12. Normalized records published to transport
+13. MongoDB Insert consumes normalized records
+14. Bulk insert to MongoDB
+15. Cache updated with inserted count
+16. Scheduler detects inserted equals total
+17. Job marked COMPLETE
+```
+
+### Happy Path — Phase 3 (RAG Indexing, runs in parallel)
+```
+9.  RAG Indexer consumes from queue_rag_raw
+10. Raw CLI output split into 512 token chunks
+11. Sentence transformer generates 384-dim vector
+    per chunk
+12. Qdrant upsert: vector + device metadata payload
+13. Point available for semantic search immediately
+```
+
+### Happy Path — Phase 2 (NL Query, on demand)
+```
+1.  Client sends POST /api/v1/query with question
+2.  NL Query service detects target collection
+    from question keywords
+3.  MongoDB schema context built for that collection
+4.  Claude API called with system prompt + question
+5.  Claude returns MongoDB filter JSON
+6.  Safety validator rejects forbidden operators
+7.  Motor executes read-only find with filter
+8.  Up to 50 matching documents returned
+9.  Results serialized to plain English summary
+10. Response sent to client
+```
+
+### Happy Path — Phase 3 (RAG Search, on demand)
+```
+1.  Client sends POST /api/v1/search with question
+2.  Sentence transformer embeds question to vector
+3.  Qdrant nearest-neighbour search with top_k=10
+4.  Results ranked by cosine similarity score
+5.  Raw chunks + device metadata returned to client
 ```
 
 ### Failure Paths
@@ -528,6 +724,28 @@ Vendor normalization solved once in templates.
 New vendor requires only new templates and plugin.
 No code changes needed.
 
+### 8. Fanout Queue for RAG (Phase 3)
+Preprocessor publishes raw output to a dedicated
+queue_rag_raw alongside the existing queue_raw_results.
+RAG Indexer consumes only from queue_rag_raw.
+This keeps the RAG pipeline entirely decoupled —
+a failed or slow RAG Indexer cannot stall the core
+pipeline. Queue depth grows in Redis until the
+indexer catches up.
+
+### 9. Claude Handles Only Filter Generation (Phase 2)
+Claude receives schema context and returns a filter
+dict. Collection routing and query execution happen
+in application code. This isolates the LLM from
+making structural decisions and limits the blast
+radius of any prompt injection attempt.
+
+### 10. Local Embedding Model (Phase 3)
+sentence-transformers runs in-process inside the
+RAG Indexer and API container. No embedding API call,
+no external latency, no token cost per search.
+The 80MB model loads once at startup.
+
 ---
 
 ## Failure Handling Summary
@@ -542,6 +760,11 @@ No code changes needed.
 | Cache timeout | No new records | Job FAILED |
 | Discovery delta invalid | Region mismatch | Abort keep existing |
 | Transport failure | Connection error | Circuit breaker |
+| RAG Indexer down | queue_rag_raw grows | Core pipeline unaffected, indexer catches up on restart |
+| Claude API error | HTTP 5xx or timeout | Return 503 with human readable message, no silent fail |
+| Claude returns invalid filter | JSON parse error | Retry once with stricter prompt, then 422 to caller |
+| Forbidden operator in filter | Safety validator | Reject with 400, log attempt |
+| Qdrant unreachable | Connection error | Search returns 503, indexer retries with backoff |
 
 ---
 
@@ -584,14 +807,23 @@ Pre-built Grafana dashboard included in
 | Protocols | Netmiko | Battle tested network IO |
 | Monitoring | Prometheus and Grafana | Industry standard |
 
+**Intelligence layer (Phase 2 and Phase 3):**
+
+| Component | Technology | Reason |
+|---|---|---|
+| NL Query (Phase 2) | Claude claude-sonnet-4-20250514 | Best in class instruction following for structured output |
+| Vector Store (Phase 3) | Qdrant | Purpose built vector DB, payload filtering, no managed service required |
+| Embedding Model (Phase 3) | sentence-transformers all-MiniLM-L6-v2 | Local inference, 384-dim, strong on technical text, 80MB |
+
 ---
 
 ## Future Roadmap
 
-- Anomaly detection on collected stats
-- Predictive alerting before device failure
 - RESTCONF and YANG model support
 - Web based job management dashboard
 - Dead letter queue for failed operations
 - Distributed tracing with OpenTelemetry
 - Support for gNMI streaming telemetry
+- Phase 2 extension: multi turn conversation memory for NL query sessions
+- Phase 3 extension: anomaly detection by comparing current embeddings to historical baseline vectors
+- Phase 3 extension: auto-alerting when semantic similarity to known failure patterns exceeds threshold
