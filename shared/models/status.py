@@ -92,3 +92,39 @@ class NormalizedOutputMessage(BaseModel):
 
     class Config:
         use_enum_values = True
+
+
+class RawDeviceOutput(BaseModel):
+    """LLD inter-component contract: Preprocessor → queue_raw_results and queue_rag_raw."""
+    execution_id: str
+    job_id: str
+    device_id: str
+    vendor: str
+    region: str
+    segment: str
+    operation: str
+    raw_output: str
+    collected_at: datetime = Field(
+        default_factory=datetime.utcnow
+    )
+    success: bool = True
+
+    class Config:
+        use_enum_values = True
+
+
+class NormalizedRecord(BaseModel):
+    """LLD inter-component contract: Postprocessor → DB Insert."""
+    execution_id: str
+    device_id: str
+    vendor: str
+    region: str
+    segment: str
+    operation: str
+    stats: dict
+    collected_at: datetime = Field(
+        default_factory=datetime.utcnow
+    )
+
+    class Config:
+        use_enum_values = True

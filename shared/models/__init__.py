@@ -24,7 +24,9 @@ from shared.models.status import (
     ComponentHealth,
     ComponentStatus,
     RawOutputMessage,
-    NormalizedOutputMessage
+    NormalizedOutputMessage,
+    RawDeviceOutput,
+    NormalizedRecord
 )
 
 __all__ = [
@@ -49,5 +51,7 @@ __all__ = [
     "ComponentHealth",
     "ComponentStatus",
     "RawOutputMessage",
-    "NormalizedOutputMessage"
+    "NormalizedOutputMessage",
+    "RawDeviceOutput",
+    "NormalizedRecord"
 ]

@@ -43,7 +43,8 @@ class RedisConfig:
         "lower": "queue_lower_segments",
         "raw_results": "queue_raw_results",
         "normalized": "queue_normalized_records",
-        "db_insert": "queue_db_insert"
+        "db_insert": "queue_db_insert",
+        "rag_raw": "queue_rag_raw"
     }
 
     CACHE_KEYS = {
@@ -72,7 +73,8 @@ class KafkaConfig:
         "raw_results": "netfleet.raw.results",
         "normalized": "netfleet.normalized.records",
         "db_insert": "netfleet.db.insert",
-        "discovery_events": "netfleet.discovery.events"
+        "discovery_events": "netfleet.discovery.events",
+        "rag_raw": "netfleet.rag.raw"
     }
 
 
@@ -198,6 +200,36 @@ class SegmentConfig:
 
 class TransportConfig:
     MODE = os.getenv("TRANSPORT_MODE", "redis")
+
+
+class QdrantConfig:
+    HOST = os.getenv("QDRANT_HOST", "localhost")
+    PORT = int(os.getenv("QDRANT_PORT", 6333))
+    COLLECTION = os.getenv(
+        "QDRANT_COLLECTION",
+        "netfleet_device_output"
+    )
+
+
+class RAGConfig:
+    EMBEDDING_MODEL = os.getenv(
+        "EMBEDDING_MODEL",
+        "all-MiniLM-L6-v2"
+    )
+    CHUNK_TOKENS = int(
+        os.getenv("EMBEDDING_CHUNK_TOKENS", 512)
+    )
+    BATCH_SIZE = int(os.getenv("RAG_BATCH_SIZE", 20))
+
+
+class NLQueryConfig:
+    MAX_RESULTS = int(
+        os.getenv("NL_QUERY_MAX_RESULTS", 50)
+    )
+    TIMEOUT_SECONDS = int(
+        os.getenv("NL_QUERY_TIMEOUT_SECONDS", 30)
+    )
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 
 SEGMENTS = load_yaml("segments.yaml")

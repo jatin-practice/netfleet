@@ -48,6 +48,7 @@ queues:
     raw_results: queue_raw_results
     normalized: queue_normalized_records
     db_insert: queue_db_insert
+    rag_raw: queue_rag_raw
 
   kafka:
     higher: netfleet.higher.segments
@@ -56,3 +57,4 @@ queues:
     normalized: netfleet.normalized.records
     db_insert: netfleet.db.insert
     discovery_events: netfleet.discovery.events
+    rag_raw: netfleet.rag.raw
